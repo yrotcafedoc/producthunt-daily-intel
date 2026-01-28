@@ -5,6 +5,7 @@ ProductHunt Daily Intel - Automated Product Analysis
 
 import os
 import json
+import time
 import anthropic
 from datetime import datetime
 from google.oauth2 import service_account
@@ -18,6 +19,10 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GOOGLE_CREDENTIALS_JSON = os.environ["GOOGLE_CREDENTIALS_JSON"]
 GOOGLE_DRIVE_FOLDER_ID = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
 SLACK_WEBHOOK_URL = os.environ["SLACK_WEBHOOK_URL"]
+
+# Retry configuration
+MAX_RETRIES = 5
+INITIAL_RETRY_DELAY = 60  # Start with 60 seconds
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -69,6 +74,26 @@ Analyze ProductHunt's Product of the Day and create a comprehensive product spec
 Begin your research now."""
 
 
+def call_claude_with_retry(messages: list, system: str) -> anthropic.types.Message:
+    """Call Claude API with automatic retry on rate limit errors."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            return client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=16000,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                system=system,
+                messages=messages
+            )
+        except anthropic.RateLimitError as e:
+            if attempt == MAX_RETRIES - 1:
+                raise  # Re-raise on final attempt
+            delay = INITIAL_RETRY_DELAY * (2 ** attempt)  # Exponential backoff: 60s, 120s, 240s, 480s
+            print(f"  Rate limited. Waiting {delay} seconds before retry {attempt + 2}/{MAX_RETRIES}...")
+            time.sleep(delay)
+    raise Exception("Max retries exceeded")
+
+
 def run_analysis() -> tuple[str, str, str]:
     """Run the ProductHunt analysis using Claude with web search."""
     today = datetime.now().strftime("%A, %B %d, %Y")
@@ -76,13 +101,7 @@ def run_analysis() -> tuple[str, str, str]:
 
     messages = [{"role": "user", "content": USER_PROMPT_TEMPLATE.format(date=today)}]
 
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=16000,
-        tools=[{"type": "web_search_20250305", "name": "web_search"}],
-        system=SYSTEM_PROMPT,
-        messages=messages
-    )
+    response = call_claude_with_retry(messages, SYSTEM_PROMPT)
 
     while response.stop_reason == "tool_use":
         messages.append({"role": "assistant", "content": response.content})
@@ -96,13 +115,7 @@ def run_analysis() -> tuple[str, str, str]:
                     "content": "Search completed"
                 })
         messages.append({"role": "user", "content": tool_results})
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=16000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            system=SYSTEM_PROMPT,
-            messages=messages
-        )
+        response = call_claude_with_retry(messages, SYSTEM_PROMPT)
 
     spec_content = "".join(block.text for block in response.content if hasattr(block, "text"))
 
