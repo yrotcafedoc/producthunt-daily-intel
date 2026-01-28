@@ -6,6 +6,7 @@ ProductHunt Daily Intel - Automated Product Analysis
 import os
 import json
 import time
+import re
 import anthropic
 from datetime import datetime
 from google.oauth2 import service_account
@@ -26,22 +27,59 @@ INITIAL_RETRY_DELAY = 60  # Start with 60 seconds
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-SYSTEM_PROMPT = """You are an expert product analyst specializing in reverse engineering SaaS products and analyzing user feedback. Your task is to analyze ProductHunt's Product of the Day and create a comprehensive product specification.
+SYSTEM_PROMPT = """You are an expert product analyst specializing in reverse engineering SaaS products and analyzing user feedback.
+
+IMPORTANT OUTPUT FORMAT RULES:
+1. Do NOT include your thinking process, reasoning, or search narration in your final output
+2. Do NOT write things like "Let me search for..." or "I found that..."
+3. Your ONLY output should be the final product specification document in clean Markdown
+4. Start your output directly with the H1 title: # [Product Name] - Product Specification
 
 Your output must be a complete product specification in Markdown with these 12 sections:
 
-1. Executive Summary (product name, one-liner, target user, value prop, URLs, date)
-2. Product Overview (problem, solution, differentiators)
-3. User Personas & Jobs-to-be-Done
-4. Feature Specification (core features with user stories, inputs/outputs, business rules)
-5. Technical Architecture (recommended tech stack with rationale, data model, API endpoints)
-6. User Flows (critical journeys with success/error states)
-7. UI/UX Specification (key screens, design system notes)
-8. Non-Functional Requirements (performance, security, scalability, accessibility)
-9. Implementation Roadmap (phased checklist)
-10. Open Questions & Assumptions
-11. Competitive Context (competitor comparison table, market positioning)
-12. Enhancement: Pain Point Solution (from ProductHunt comments - source quote, frequency, proposed feature with user story, technical approach, UI changes)
+# [Product Name] - Product Specification
+
+## 1. Executive Summary
+- **Product Name:** [name]
+- **One-liner:** [description]
+- **Target User:** [who]
+- **Value Proposition:** [why]
+- **Product URL:** [url]
+- **ProductHunt URL:** [url]
+- **Analysis Date:** [date]
+
+## 2. Product Overview
+[problem, solution, differentiators]
+
+## 3. User Personas & Jobs-to-be-Done
+[personas and JTBD]
+
+## 4. Feature Specification
+[core features with user stories, inputs/outputs, business rules]
+
+## 5. Technical Architecture
+[recommended tech stack with rationale, data model, API endpoints]
+
+## 6. User Flows
+[critical journeys with success/error states]
+
+## 7. UI/UX Specification
+[key screens, design system notes]
+
+## 8. Non-Functional Requirements
+[performance, security, scalability, accessibility]
+
+## 9. Implementation Roadmap
+[phased checklist]
+
+## 10. Open Questions & Assumptions
+[questions and assumptions]
+
+## 11. Competitive Context
+[competitor comparison table, market positioning]
+
+## 12. Enhancement: Pain Point Solution
+[from ProductHunt comments - source quote, frequency, proposed feature with user story, technical approach, UI changes]
 
 Be comprehensive enough that someone could build the product from your spec."""
 
@@ -66,12 +104,13 @@ Analyze ProductHunt's Product of the Day and create a comprehensive product spec
    - Workarounds users mention
    - Select the highest-priority UNADDRESSED pain point
 
-4. **Generate the full 12-section specification** with:
-   - Inferred tech stack with rationale
-   - Actionable implementation roadmap
-   - Section 12: Enhancement based on real user feedback
+4. **Generate the full 12-section specification**
 
-Begin your research now."""
+CRITICAL: Your response must ONLY contain the final Markdown specification document.
+- Start directly with: # [Product Name] - Product Specification
+- Do NOT include any thinking, reasoning, or search narration
+- Do NOT write "Let me search..." or "I found..." or similar phrases
+- Output ONLY the clean, formatted specification document"""
 
 
 def call_claude_with_retry(messages: list, system: str) -> anthropic.types.Message:
@@ -92,6 +131,56 @@ def call_claude_with_retry(messages: list, system: str) -> anthropic.types.Messa
             print(f"  Rate limited. Waiting {delay} seconds before retry {attempt + 2}/{MAX_RETRIES}...")
             time.sleep(delay)
     raise Exception("Max retries exceeded")
+
+
+def extract_product_info(spec_content: str) -> tuple[str, str]:
+    """Extract product name and URL from the specification content."""
+    product_name = "Unknown Product"
+    product_url = ""
+
+    # Try multiple patterns to find the product name
+    # Pattern 1: # Product Name - Product Specification
+    title_match = re.search(r'^#\s+(.+?)\s*-\s*Product Specification', spec_content, re.MULTILINE)
+    if title_match:
+        product_name = title_match.group(1).strip()
+
+    # Pattern 2: **Product Name:** value
+    if product_name == "Unknown Product":
+        name_match = re.search(r'\*\*Product Name:\*\*\s*(.+?)(?:\n|$)', spec_content)
+        if name_match:
+            product_name = name_match.group(1).strip()
+
+    # Pattern 3: First H1 heading
+    if product_name == "Unknown Product":
+        h1_match = re.search(r'^#\s+(.+?)(?:\n|$)', spec_content, re.MULTILINE)
+        if h1_match:
+            product_name = h1_match.group(1).strip()
+            # Clean up if it has " - Product Specification" suffix
+            product_name = re.sub(r'\s*-\s*Product Specification.*$', '', product_name)
+
+    # Extract product URL
+    url_match = re.search(r'\*\*Product URL:\*\*\s*(https?://[^\s\n]+)', spec_content)
+    if url_match:
+        product_url = url_match.group(1).strip()
+
+    return product_name, product_url
+
+
+def clean_spec_content(content: str) -> str:
+    """Remove any thinking/reasoning text and keep only the specification."""
+    # Find where the actual spec starts (first H1 heading)
+    spec_start = re.search(r'^#\s+.+?(?:Product Specification|Specification)', content, re.MULTILINE | re.IGNORECASE)
+
+    if spec_start:
+        return content[spec_start.start():]
+
+    # If no clear spec header, try to find the first H1
+    h1_match = re.search(r'^#\s+', content, re.MULTILINE)
+    if h1_match:
+        return content[h1_match.start():]
+
+    # Return as-is if we can't find a clear starting point
+    return content
 
 
 def run_analysis() -> tuple[str, str, str]:
@@ -117,15 +206,14 @@ def run_analysis() -> tuple[str, str, str]:
         messages.append({"role": "user", "content": tool_results})
         response = call_claude_with_retry(messages, SYSTEM_PROMPT)
 
-    spec_content = "".join(block.text for block in response.content if hasattr(block, "text"))
+    # Collect all text content from the response
+    raw_content = "".join(block.text for block in response.content if hasattr(block, "text"))
 
-    product_name = "Unknown Product"
-    product_url = ""
-    for line in spec_content.split("\n"):
-        if line.startswith("# ") and " - Product Specification" in line:
-            product_name = line.replace("# ", "").replace(" - Product Specification", "").strip()
-        if "**Product URL:**" in line:
-            product_url = line.split("**Product URL:**")[1].strip()
+    # Clean the content to remove any thinking/reasoning
+    spec_content = clean_spec_content(raw_content)
+
+    # Extract product info using improved parsing
+    product_name, product_url = extract_product_info(spec_content)
 
     print(f"Analysis complete for: {product_name}")
     return product_name, spec_content, product_url
