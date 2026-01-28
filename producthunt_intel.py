@@ -69,8 +69,23 @@ Your output must be a complete product specification in Markdown with these 12 s
 ## 8. Non-Functional Requirements
 [performance, security, scalability, accessibility]
 
-## 9. Implementation Roadmap
-[phased checklist]
+## 9. Implementation Roadmap (Claude Code Optimized)
+This roadmap is specifically designed for AI agent implementation (Claude Code). Each phase MUST be:
+- Completable in a SINGLE Claude Code session (under 100k tokens of context to maintain code quality and accuracy)
+- Small, atomic, and independently testable
+- Specific enough that an AI agent can execute without ambiguity
+
+Format each phase as:
+### Phase X: [Short Title]
+**Scope:** [1-2 sentence description]
+**Files to create/modify:** [specific file paths]
+**Acceptance criteria:** [bullet list of specific, testable outcomes]
+**Estimated complexity:** [Low/Medium - never High, break down further if High]
+
+Break the implementation into 10-20 small phases. Err on the side of MORE phases with LESS scope each.
+Example phase sizes: "Set up project structure and dependencies", "Create user data model", "Build login API endpoint", "Add input validation to login", "Create login form component", "Connect login form to API", "Add error handling to login flow"
+
+IMPORTANT: The final phases of the roadmap MUST implement the Enhancement from Section 12 (the pain point solution). After completing the core product phases, add as many additional phases as needed to fully implement the enhancement feature. Apply the same sizing rules - each phase must be completable within 100k tokens of context. Label these phases clearly as "Enhancement Phase X" so they are distinguishable from core product phases.
 
 ## 10. Open Questions & Assumptions
 [questions and assumptions]
