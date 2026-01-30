@@ -18,7 +18,7 @@ import tempfile
 # Configuration
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 GOOGLE_CREDENTIALS_JSON = os.environ["GOOGLE_CREDENTIALS_JSON"]
-GOOGLE_DRIVE_FOLDER_ID = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
+GOOGLE_DRIVE_FOLDER_ID = "0ANSceNat0SgkUk9PVA"
 SLACK_WEBHOOK_URL = os.environ["SLACK_WEBHOOK_URL"]
 
 # Retry configuration
@@ -104,7 +104,7 @@ Analyze ProductHunt's Product of the Day and create a comprehensive product spec
 
 ## Instructions
 
-1. **Find Product of the Day**: Search ProductHunt for today's #1 Product of the Day (or yesterday's if today's winner hasn't been announced - winners are announced ~3pm PT / 11pm GMT). If #1 has insufficient info, use #2.
+1. **Find Product of the Day**: Search ProductHunt for today's #1 Product of the Day (or yesterday's if today's winner hasn't been announced - winners are announced ~3pm PT / 11pm GMT). If #1 has insufficient info, use #2, then #3, and so on.
 
 2. **Research thoroughly**:
    - Product's official website (features, pricing)
@@ -198,12 +198,61 @@ def clean_spec_content(content: str) -> str:
     return content
 
 
-def run_analysis() -> tuple[str, str, str]:
+def get_analyzed_products() -> list[str]:
+    """Fetch list of already-analyzed product names from Google Drive."""
+    print("Checking previously analyzed products...")
+    
+    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+    credentials = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+    drive_service = build("drive", "v3", credentials=credentials)
+    
+    analyzed_products = []
+    page_token = None
+    
+    while True:
+        response = drive_service.files().list(
+            q=f"'{GOOGLE_DRIVE_FOLDER_ID}' in parents and trashed = false",
+            spaces="drive",
+            fields="nextPageToken, files(name)",
+            pageToken=page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+        
+        for file in response.get("files", []):
+            # Extract product name from filename format: "YYYY-MM-DD - Product Name"
+            match = re.match(r'^\d{4}-\d{2}-\d{2}\s*-\s*(.+)$', file["name"])
+            if match:
+                analyzed_products.append(match.group(1).strip())
+        
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    
+    print(f"Found {len(analyzed_products)} previously analyzed products")
+    return analyzed_products
+
+
+def run_analysis(excluded_products: list[str]) -> tuple[str, str, str]:
     """Run the ProductHunt analysis using Claude with web search."""
     today = datetime.now().strftime("%A, %B %d, %Y")
     print(f"Starting ProductHunt analysis for {today}...")
 
-    messages = [{"role": "user", "content": USER_PROMPT_TEMPLATE.format(date=today)}]
+    # Build the exclusion clause for the prompt
+    exclusion_text = ""
+    if excluded_products:
+        exclusion_text = f"""
+
+## Previously Analyzed Products (DO NOT ANALYZE THESE)
+The following products have already been analyzed. Skip them and choose the next highest-ranked product instead (keep going down the list until you find one not on this list):
+{chr(10).join(f'- {name}' for name in excluded_products)}
+"""
+
+    user_prompt = USER_PROMPT_TEMPLATE.format(date=today) + exclusion_text
+    messages = [{"role": "user", "content": user_prompt}]
 
     response = call_claude_with_retry(messages, SYSTEM_PROMPT)
 
@@ -305,7 +354,8 @@ def send_slack_notification(success: bool, product_name: str = "", doc_url: str 
 
 def main():
     try:
-        product_name, spec_content, product_url = run_analysis()
+        excluded_products = get_analyzed_products()
+        product_name, spec_content, product_url = run_analysis(excluded_products)
         doc_url = upload_to_drive(product_name, spec_content)
         send_slack_notification(True, product_name, doc_url, product_url)
         print("Daily intel complete!")
