@@ -2,7 +2,7 @@ name: ProductHunt Daily Intel
 
 on:
   schedule:
-    - cron: '1 22 * * *'  # 22:01 UTC = 23:01 BST
+    - cron: '1 8 * * *'
   workflow_dispatch:
 
 jobs:
